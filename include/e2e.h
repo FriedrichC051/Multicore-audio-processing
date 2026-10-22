@@ -1,10 +1,6 @@
 #ifndef E2E_H
 #define E2E_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* x: [source][nx], nx = hist + total_blocks * buf, hist = fir - 1.
    The first hist samples of each source are the initial history.
    h_flip: [orient][source][2][fir], already reversed.
@@ -21,9 +17,5 @@ int e2e_fft_measure(int buf, int fir, int k, const float *x, const float *h_orig
                     int *groups_out);
 
 void e2e_fft_shutdown(void);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif

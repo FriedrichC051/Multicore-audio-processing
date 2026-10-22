@@ -1,6 +1,6 @@
-CC := gcc
+CXX := g++
 NVCC := nvcc
-CFLAGS := -O3 -mavx2 -mfma -Iinclude -std=c11 -Wall -Wextra
+CXXFLAGS := -O3 -mavx2 -mfma -Iinclude -std=c++17 -Wall -Wextra
 NVCCFLAGS := -O3 -Iinclude -arch=sm_89 -std=c++17
 
 BUILD := build
@@ -14,23 +14,23 @@ all: $(BUILD)/cpu_bench $(BUILD)/device_bench $(BUILD)/host_register $(BUILD)/e2
 $(BUILD):
 	mkdir -p $(BUILD) results
 
-$(BUILD)/signal.o: src/common/signal.c include/conv.h | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/signal.o: src/common/signal.cpp include/conv.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD)/stats.o: src/common/stats.c include/conv.h | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/stats.o: src/common/stats.cpp include/conv.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD)/ref_f64.o: src/cpu/ref_f64.c include/conv.h | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/ref_f64.o: src/cpu/ref_f64.cpp include/conv.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD)/q15.o: src/cpu/q15.c include/conv.h | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/q15.o: src/cpu/q15.cpp include/conv.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD)/avx2.o: src/cpu/avx2.c include/conv.h | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/avx2.o: src/cpu/avx2.cpp include/conv.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD)/cpu_bench: src/bench/cpu_bench.c $(HOST_OBJS) | $(BUILD)
-	$(CC) $(CFLAGS) $< $(HOST_OBJS) -o $@ -lm
+$(BUILD)/cpu_bench: src/bench/cpu_bench.cpp $(HOST_OBJS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $< $(HOST_OBJS) -o $@ -lm
 
 $(BUILD)/device_bench: src/bench/device_bench.cu src/cuda/fir_f32.cu src/cuda/fir_q15.cu src/cuda/fir_dp4a.cu $(BENCH_HOST) | $(BUILD)
 	$(NVCC) $(NVCCFLAGS) $< src/cuda/fir_f32.cu src/cuda/fir_q15.cu src/cuda/fir_dp4a.cu $(BENCH_HOST) -o $@ -lm

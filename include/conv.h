@@ -13,10 +13,6 @@
 #define CONV_BLOCKS 1000
 #define CONV_I8_SCALE 127
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 int conv_total_samples(int warmup, int blocks);
 
 void signal_generate(float *x, int nx, float *h_l, float *h_r, int fir);
@@ -47,9 +43,5 @@ typedef struct {
 double snr_db(const double *ref_l, const double *test_l, const double *ref_r, const double *test_r,
               int n);
 void time_percentiles(double *us, int n, TimeStats *out);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif

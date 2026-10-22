@@ -46,15 +46,15 @@
 
 ```text
 include/conv.h          块长、阶数、声道、计时与 SNR 接口
-src/common/signal.c     固定种子信号与 HRIR
-src/common/stats.c      SNR 与百分位
-src/cpu/ref_f64.c       双精度参照
-src/cpu/q15.c           int32 / int64 累加
-src/cpu/avx2.c          AVX2 + FMA
+src/common/signal.cpp   固定种子信号与 HRIR
+src/common/stats.cpp    SNR 与百分位
+src/cpu/ref_f64.cpp     双精度参照
+src/cpu/q15.cpp         int32 / int64 累加
+src/cpu/avx2.cpp        AVX2 + FMA
 src/cuda/fir_f32.cu     naive / constant / shared / unroll
 src/cuda/fir_q15.cu     设备侧 Q15，int64 累加
 src/cuda/fir_dp4a.cu    int8 量化后的 __dp4a
-src/bench/cpu_bench.c
+src/bench/cpu_bench.cpp
 src/bench/device_bench.cu
 src/probe/host_register.cu
 Makefile                sm_89，nvcc 与 gcc -O3 -mavx2 -mfma
