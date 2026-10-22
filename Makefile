@@ -9,7 +9,7 @@ BENCH_HOST := $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o $(BUILD)/q15
 
 .PHONY: all clean
 
-all: $(BUILD)/cpu_bench $(BUILD)/device_bench $(BUILD)/host_register
+all: $(BUILD)/cpu_bench $(BUILD)/device_bench $(BUILD)/host_register $(BUILD)/e2e_bench
 
 $(BUILD):
 	mkdir -p $(BUILD) results
@@ -37,6 +37,13 @@ $(BUILD)/device_bench: src/bench/device_bench.cu src/cuda/fir_f32.cu src/cuda/fi
 
 $(BUILD)/host_register: src/probe/host_register.cu | $(BUILD)
 	$(NVCC) $(NVCCFLAGS) $< -o $@
+
+$(BUILD)/e2e_bench: src/bench/e2e_bench.cu src/cuda/fir_e2e.cu src/cuda/fir_cufft.cu $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o $(BUILD)/avx2.o | $(BUILD)
+	$(NVCC) $(NVCCFLAGS) $< src/cuda/fir_e2e.cu src/cuda/fir_cufft.cu $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o $(BUILD)/avx2.o -o $@ -lcufft -lm
+
+e2e: $(BUILD)/e2e_bench
+	mkdir -p results
+	$(BUILD)/e2e_bench > results/phase2_results.md
 
 results: results/phase1_results.md
 

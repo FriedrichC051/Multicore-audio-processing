@@ -20,6 +20,8 @@ extern "C" {
 int conv_total_samples(int warmup, int blocks);
 
 void signal_generate(float *x, int nx, float *h_l, float *h_r, int fir);
+void signal_generate_at(float *x, int nx, int hist, float *h_l, float *h_r, int fir, uint32_t seed);
+void hrir_generate(float *h_l, float *h_r, int fir, uint32_t seed);
 void hrir_flip(const float *h, float *h_flip, int fir);
 
 int16_t conv_to_q15(float x);
