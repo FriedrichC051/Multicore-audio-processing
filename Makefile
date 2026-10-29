@@ -9,7 +9,7 @@ BENCH_HOST := $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o $(BUILD)/q15
 
 .PHONY: all clean
 
-all: $(BUILD)/cpu_bench $(BUILD)/device_bench $(BUILD)/host_register $(BUILD)/e2e_bench
+all: $(BUILD)/cpu_bench $(BUILD)/device_bench $(BUILD)/host_register $(BUILD)/e2e_bench $(BUILD)/path_bench
 
 $(BUILD):
 	mkdir -p $(BUILD) results
@@ -44,6 +44,16 @@ $(BUILD)/e2e_bench: src/bench/e2e_bench.cu src/cuda/fir_e2e.cu src/cuda/fir_cuff
 e2e: $(BUILD)/e2e_bench
 	mkdir -p results
 	$(BUILD)/e2e_bench > results/phase2_results.md
+
+$(BUILD)/fir_opencl.o: src/opencl/fir_opencl.cpp include/paths.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -I/usr/local/cuda/include -c $< -o $@
+
+$(BUILD)/path_bench: src/bench/path_bench.cpp src/cuda/fir_paths.cu src/cuda/fir_e2e.cu $(BUILD)/fir_opencl.o $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o $(BUILD)/avx2.o | $(BUILD)
+	$(NVCC) $(NVCCFLAGS) src/bench/path_bench.cpp src/cuda/fir_paths.cu src/cuda/fir_e2e.cu $(BUILD)/fir_opencl.o $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o $(BUILD)/avx2.o -o $@ -L/usr/local/cuda/targets/x86_64-linux/lib -lOpenCL -lm
+
+phase3: $(BUILD)/path_bench
+	mkdir -p results
+	$(BUILD)/path_bench > results/phase3_results.md
 
 results: results/phase1_results.md
 
