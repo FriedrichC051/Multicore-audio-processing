@@ -37,7 +37,7 @@ int nx_for(int total) { return kHist + total * kBuf; }
 void count_tiers(int sources, int total, int warmup, int measured, int hot_count, long* hot_blocks,
                  long* warm_blocks, long* cold_blocks) {
     int hot_grid[16];
-    const int hot_n = select_hot_grid(hot_count, hot_grid);
+    const int hot_n = select_hot_grid(hot_count, 5, hot_grid);
     std::vector<float> az(static_cast<size_t>(total) * sources);
     fill_azimuths(sources, total, warmup + 100, az.data());
     *hot_blocks = 0;
@@ -46,7 +46,7 @@ void count_tiers(int sources, int total, int warmup, int measured, int hot_count
     for (int b = warmup; b < warmup + measured; ++b) {
         for (int s = 0; s < sources; ++s) {
             TierHit hit{};
-            classify_azimuth(az[static_cast<size_t>(b) * sources + s], hot_grid, hot_n, &hit);
+            classify_azimuth(az[static_cast<size_t>(b) * sources + s], hot_grid, hot_n, 5, &hit);
             if (hit.kind == kTierHot) {
                 ++(*hot_blocks);
             } else if (hit.kind == kTierWarm) {
@@ -61,7 +61,7 @@ void count_tiers(int sources, int total, int warmup, int measured, int hot_count
 double snr_against_reference(const float* x, const float* y_out, int sources, int total, int warmup,
                              int measured, int hot_count, int mode) {
     int hot_grid[16];
-    const int hot_n = select_hot_grid(hot_count, hot_grid);
+    const int hot_n = select_hot_grid(hot_count, 5, hot_grid);
     std::vector<float> az(static_cast<size_t>(total) * sources);
     fill_azimuths(sources, total, warmup + 100, az.data());
     const int nx = nx_for(total);
@@ -82,7 +82,7 @@ double snr_against_reference(const float* x, const float* y_out, int sources, in
         }
         const int b = warmup + pick;
         for (int s = 0; s < sources; ++s) {
-            reference_flipped(az[static_cast<size_t>(b) * sources + s], hot_grid, hot_n, mode == 0 ? 1 : 0,
+            reference_flipped(az[static_cast<size_t>(b) * sources + s], hot_grid, hot_n, mode == 0 ? 1 : 0, 5,
                               coeff.data(), kFir);
             for (int i = 0; i < kHist + kBuf; ++i) {
                 ext[static_cast<size_t>(i)] =
@@ -120,7 +120,7 @@ int run_row(int sources, int mode, int hot, int warmup, int measured, Row* row) 
     }
     long uploads = 0;
     fprintf(stderr, "sources=%d mode=%d hot=%d blocks=%d\n", sources, mode, hot, measured);
-    if (motion_execute(x.data(), sources, total, warmup, measured, hot, mode, y.data(), us.data(),
+    if (motion_execute(x.data(), sources, total, warmup, measured, hot, mode, 5, 0, y.data(), us.data(),
                        &uploads) != 0) {
         fprintf(stderr, "motion_execute failed\n");
         return 1;

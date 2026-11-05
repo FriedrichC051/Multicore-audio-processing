@@ -7,7 +7,7 @@ BUILD := build
 HOST_OBJS := $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o $(BUILD)/q15.o $(BUILD)/avx2.o
 BENCH_HOST := $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o $(BUILD)/q15.o
 
-.PHONY: all clean e2e phase3 motion
+.PHONY: all clean e2e phase3 motion grid mix
 
 all: $(BUILD)/cpu_bench $(BUILD)/device_bench $(BUILD)/host_register $(BUILD)/e2e_bench $(BUILD)/path_bench
 
@@ -64,6 +64,20 @@ $(BUILD)/motion_bench: src/bench/motion_bench.cpp src/cuda/fir_hot.cu $(BUILD)/h
 motion: $(BUILD)/motion_bench
 	mkdir -p results
 	$(BUILD)/motion_bench > results/motion_results.md
+
+$(BUILD)/grid_bench: src/bench/grid_bench.cpp src/cuda/fir_hot.cu $(BUILD)/hrir_field.o $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o | $(BUILD)
+	$(NVCC) $(NVCCFLAGS) src/bench/grid_bench.cpp src/cuda/fir_hot.cu $(BUILD)/hrir_field.o $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o -o $@ -lm
+
+grid: $(BUILD)/grid_bench
+	mkdir -p results
+	$(BUILD)/grid_bench > results/grid_results.md
+
+$(BUILD)/mix_bench: src/bench/mix_bench.cpp src/cuda/fir_hot.cu $(BUILD)/hrir_field.o $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o | $(BUILD)
+	$(NVCC) $(NVCCFLAGS) src/bench/mix_bench.cpp src/cuda/fir_hot.cu $(BUILD)/hrir_field.o $(BUILD)/signal.o $(BUILD)/stats.o $(BUILD)/ref_f64.o -o $@ -lm
+
+mix: $(BUILD)/mix_bench
+	mkdir -p results
+	$(BUILD)/mix_bench > results/mix_results.md
 
 results: results/phase1_results.md
 

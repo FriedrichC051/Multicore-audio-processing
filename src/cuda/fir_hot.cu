@@ -27,6 +27,7 @@ constexpr int kMaxHot = 16;
 
 __constant__ float c_hot[kMaxHot * 2 * kFir];
 
+template <int MixOut>
 __global__ void fir_blended_kernel(const float* __restrict__ hist_in, const float* __restrict__ neu,
                                    float* __restrict__ hist_out, float* __restrict__ y,
                                    const float* __restrict__ warm, const float* __restrict__ cold,
@@ -61,31 +62,58 @@ __global__ void fir_blended_kernel(const float* __restrict__ hist_in, const floa
         ha = warm + (ia[src] * 2 + ch) * fir;
         hb = warm + (ib[src] * 2 + ch) * fir;
     }
-    for (int k = threadIdx.x; k < fir; k += blockDim.x) {
-        hc[k] = (1.0f - w) * ha[k] + w * hb[k];
+    if (MixOut == 0) {
+        for (int k = threadIdx.x; k < fir; k += blockDim.x) {
+            hc[k] = (1.0f - w) * ha[k] + w * hb[k];
+        }
     }
     __syncthreads();
 
     float* yc = y + (src * 2 + ch) * buf;
     for (int j = threadIdx.x; j < buf; j += blockDim.x) {
         const float* x = sx + j;
-        float acc = 0.0f;
+        float acc_a = 0.0f;
+        float acc_b = 0.0f;
         int k = 0;
 #pragma unroll 1
         for (; k + 7 < fir; k += 8) {
-            acc += x[k] * hc[k];
-            acc += x[k + 1] * hc[k + 1];
-            acc += x[k + 2] * hc[k + 2];
-            acc += x[k + 3] * hc[k + 3];
-            acc += x[k + 4] * hc[k + 4];
-            acc += x[k + 5] * hc[k + 5];
-            acc += x[k + 6] * hc[k + 6];
-            acc += x[k + 7] * hc[k + 7];
+            if (MixOut == 0) {
+                acc_a += x[k] * hc[k];
+                acc_a += x[k + 1] * hc[k + 1];
+                acc_a += x[k + 2] * hc[k + 2];
+                acc_a += x[k + 3] * hc[k + 3];
+                acc_a += x[k + 4] * hc[k + 4];
+                acc_a += x[k + 5] * hc[k + 5];
+                acc_a += x[k + 6] * hc[k + 6];
+                acc_a += x[k + 7] * hc[k + 7];
+            } else {
+                acc_a += x[k] * ha[k];
+                acc_b += x[k] * hb[k];
+                acc_a += x[k + 1] * ha[k + 1];
+                acc_b += x[k + 1] * hb[k + 1];
+                acc_a += x[k + 2] * ha[k + 2];
+                acc_b += x[k + 2] * hb[k + 2];
+                acc_a += x[k + 3] * ha[k + 3];
+                acc_b += x[k + 3] * hb[k + 3];
+                acc_a += x[k + 4] * ha[k + 4];
+                acc_b += x[k + 4] * hb[k + 4];
+                acc_a += x[k + 5] * ha[k + 5];
+                acc_b += x[k + 5] * hb[k + 5];
+                acc_a += x[k + 6] * ha[k + 6];
+                acc_b += x[k + 6] * hb[k + 6];
+                acc_a += x[k + 7] * ha[k + 7];
+                acc_b += x[k + 7] * hb[k + 7];
+            }
         }
         for (; k < fir; ++k) {
-            acc += x[k] * hc[k];
+            if (MixOut == 0) {
+                acc_a += x[k] * hc[k];
+            } else {
+                acc_a += x[k] * ha[k];
+                acc_b += x[k] * hb[k];
+            }
         }
-        yc[j] = acc;
+        yc[j] = MixOut == 0 ? acc_a : (1.0f - w) * acc_a + w * acc_b;
     }
     __syncthreads();
     if (ch == 0) {
@@ -111,8 +139,11 @@ int motion_hot_limit() {
 }
 
 int motion_execute(const float* x, int sources, int total_blocks, int warmup, int measured, int hot_count,
-                   int mode, float* y_out, double* us_e2e, long* host_reuploads) {
-    if (hot_count < 1 || hot_count > kMaxHot || sources < 1 || warmup + measured > total_blocks) {
+                   int mode, int grid_step, int mix_outputs, float* y_out, double* us_e2e,
+                   long* host_reuploads) {
+    const int grid_count = grid_count_for(grid_step);
+    if (hot_count < 1 || hot_count > kMaxHot || sources < 1 || warmup + measured > total_blocks ||
+        grid_count == 0 || (mix_outputs != 0 && mix_outputs != 1)) {
         return 1;
     }
     const int hist = kFir - 1;
@@ -121,23 +152,26 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
     const size_t pair = 2u * kFir;
 
     int hot_grid[kMaxHot];
-    const int hot_n = select_hot_grid(hot_count, hot_grid);
-    int slot_of[kGridCount];
-    for (int i = 0; i < kGridCount; ++i) {
+    const int hot_n = select_hot_grid(hot_count, grid_step, hot_grid);
+    if (hot_n < 1) {
+        return 1;
+    }
+    int slot_of[kGridMax];
+    for (int i = 0; i < kGridMax; ++i) {
         slot_of[i] = -1;
     }
     std::vector<float> hot_pack(static_cast<size_t>(hot_n) * pair, 0.0f);
     for (int s = 0; s < hot_n; ++s) {
         slot_of[hot_grid[s]] = s;
-        reference_flipped(static_cast<float>(hot_grid[s] * kGridStepDeg), nullptr, 0, 1,
+        reference_flipped(static_cast<float>(hot_grid[s] * grid_step), nullptr, 0, 1, grid_step,
                           hot_pack.data() + static_cast<size_t>(s) * pair, kFir);
     }
     CUDA_CHECK(cudaMemcpyToSymbol(c_hot, hot_pack.data(), hot_pack.size() * sizeof(float)));
 
-    std::vector<float> warm(static_cast<size_t>(kGridCount) * pair, 0.0f);
-    for (int g = 0; g < kGridCount; ++g) {
-        if (!azimuth_in_cold_gap(static_cast<float>(g * kGridStepDeg))) {
-            reference_flipped(static_cast<float>(g * kGridStepDeg), nullptr, 0, 1,
+    std::vector<float> warm(static_cast<size_t>(grid_count) * pair, 0.0f);
+    for (int g = 0; g < grid_count; ++g) {
+        if (!azimuth_in_cold_gap(static_cast<float>(g * grid_step))) {
+            reference_flipped(static_cast<float>(g * grid_step), nullptr, 0, 1, grid_step,
                               warm.data() + static_cast<size_t>(g) * pair, kFir);
         }
     }
@@ -187,7 +221,7 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
     cudaEvent_t ev1;
     CUDA_CHECK(cudaEventCreate(&ev0));
     CUDA_CHECK(cudaEventCreate(&ev1));
-    const int smem = (hist + kBuf + kFir) * static_cast<int>(sizeof(float));
+    const int smem = (hist + kBuf + (mix_outputs == 0 ? kFir : 0)) * static_cast<int>(sizeof(float));
 
     for (int b = 0; b < total_blocks; ++b) {
         std::vector<int> ia(static_cast<size_t>(sources));
@@ -202,10 +236,11 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
         for (int s = 0; s < sources; ++s) {
             const float az = azimuths[static_cast<size_t>(b) * sources + s];
             TierHit hit{};
-            classify_azimuth(az, hot_grid, hot_n, &hit);
+            classify_azimuth(az, hot_grid, hot_n, grid_step, &hit);
             int tag = 0;
             if (mode == 0 || hit.kind == kTierCold) {
-                reference_flipped(az, hot_grid, hot_n, 1, cold.data() + static_cast<size_t>(s) * pair, kFir);
+                reference_flipped(az, hot_grid, hot_n, 1, grid_step, cold.data() + static_cast<size_t>(s) * pair,
+                                  kFir);
                 kind[s] = kTierCold;
                 ia[s] = 0;
                 ib[s] = 0;
@@ -234,9 +269,15 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
         CUDA_CHECK(cudaMemcpy(d_ib, ib.data(), ib.size() * sizeof(int), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_w, ww.data(), ww.size() * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_kind, kind.data(), kind.size() * sizeof(int), cudaMemcpyHostToDevice));
-        fir_blended_kernel<<<dim3(2, sources), kBlock, static_cast<size_t>(smem)>>>(
-            d_hist[b % 2], d_new, d_hist[(b + 1) % 2], d_y, d_warm, d_cold, d_slot, d_ia, d_ib, d_w, d_kind,
-            kBuf, kFir);
+        if (mix_outputs == 0) {
+            fir_blended_kernel<0><<<dim3(2, sources), kBlock, static_cast<size_t>(smem)>>>(
+                d_hist[b % 2], d_new, d_hist[(b + 1) % 2], d_y, d_warm, d_cold, d_slot, d_ia, d_ib, d_w,
+                d_kind, kBuf, kFir);
+        } else {
+            fir_blended_kernel<1><<<dim3(2, sources), kBlock, static_cast<size_t>(smem)>>>(
+                d_hist[b % 2], d_new, d_hist[(b + 1) % 2], d_y, d_warm, d_cold, d_slot, d_ia, d_ib, d_w,
+                d_kind, kBuf, kFir);
+        }
         if (timed) {
             CUDA_CHECK(cudaMemcpy(y_out + static_cast<size_t>(b - warmup) * sources * 2u * kBuf, d_y,
                                   static_cast<size_t>(sources) * 2u * kBuf * sizeof(float),
