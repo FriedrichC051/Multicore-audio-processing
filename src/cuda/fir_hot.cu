@@ -12,7 +12,6 @@
 namespace {
 
 constexpr int kFir = 512;
-constexpr int kBuf = 1024;
 constexpr int kBlock = 512;
 constexpr int kMaxHot = 16;
 
@@ -140,15 +139,16 @@ int motion_hot_limit() {
 
 int motion_execute(const float* x, int sources, int total_blocks, int warmup, int measured, int hot_count,
                    int mode, int grid_step, int mix_outputs, float* y_out, double* us_e2e,
-                   long* host_reuploads) {
+                   long* host_reuploads, int buf) {
     const int grid_count = grid_count_for(grid_step);
     if (hot_count < 1 || hot_count > kMaxHot || sources < 1 || warmup + measured > total_blocks ||
-        grid_count == 0 || (mix_outputs != 0 && mix_outputs != 1)) {
+        grid_count == 0 || (mix_outputs != 0 && mix_outputs != 1) || mode < 0 || mode > 2 ||
+        (buf != 128 && buf != 256 && buf != 512 && buf != 1024)) {
         return 1;
     }
     const int hist = kFir - 1;
-    const int nx = hist + total_blocks * kBuf;
-    const size_t new_floats = static_cast<size_t>(sources) * kBuf;
+    const int nx = hist + total_blocks * buf;
+    const size_t new_floats = static_cast<size_t>(sources) * buf;
     const size_t pair = 2u * kFir;
 
     int hot_grid[kMaxHot];
@@ -169,10 +169,12 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
     CUDA_CHECK(cudaMemcpyToSymbol(c_hot, hot_pack.data(), hot_pack.size() * sizeof(float)));
 
     std::vector<float> warm(static_cast<size_t>(grid_count) * pair, 0.0f);
-    for (int g = 0; g < grid_count; ++g) {
-        if (!azimuth_in_cold_gap(static_cast<float>(g * grid_step))) {
-            reference_flipped(static_cast<float>(g * grid_step), nullptr, 0, 1, grid_step,
-                              warm.data() + static_cast<size_t>(g) * pair, kFir);
+    if (mode != 2) {
+        for (int g = 0; g < grid_count; ++g) {
+            if (!azimuth_in_cold_gap(static_cast<float>(g * grid_step))) {
+                reference_flipped(static_cast<float>(g * grid_step), nullptr, 0, 1, grid_step,
+                                  warm.data() + static_cast<size_t>(g) * pair, kFir);
+            }
         }
     }
 
@@ -195,7 +197,7 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
     CUDA_CHECK(cudaMemset(d_hist[0], 0, static_cast<size_t>(sources) * hist * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_hist[1], 0, static_cast<size_t>(sources) * hist * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_new, new_floats * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_y, static_cast<size_t>(sources) * 2u * kBuf * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_y, static_cast<size_t>(sources) * 2u * static_cast<size_t>(buf) * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_warm, warm.size() * sizeof(float)));
     CUDA_CHECK(cudaMemcpy(d_warm, warm.data(), warm.size() * sizeof(float), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMalloc(&d_cold, static_cast<size_t>(sources) * pair * sizeof(float)));
@@ -210,8 +212,8 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
 
     for (int b = 0; b < total_blocks; ++b) {
         for (int s = 0; s < sources; ++s) {
-            const float* src = x + static_cast<size_t>(s) * nx + hist + static_cast<size_t>(b) * kBuf;
-            std::memcpy(pack + (static_cast<size_t>(b) * sources + s) * kBuf, src, kBuf * sizeof(float));
+            const float* src = x + static_cast<size_t>(s) * nx + hist + static_cast<size_t>(b) * buf;
+            std::memcpy(pack + (static_cast<size_t>(b) * sources + s) * buf, src, static_cast<size_t>(buf) * sizeof(float));
         }
     }
 
@@ -221,7 +223,7 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
     cudaEvent_t ev1;
     CUDA_CHECK(cudaEventCreate(&ev0));
     CUDA_CHECK(cudaEventCreate(&ev1));
-    const int smem = (hist + kBuf + (mix_outputs == 0 ? kFir : 0)) * static_cast<int>(sizeof(float));
+    const int smem = (hist + buf + (mix_outputs == 0 ? kFir : 0)) * static_cast<int>(sizeof(float));
 
     for (int b = 0; b < total_blocks; ++b) {
         std::vector<int> ia(static_cast<size_t>(sources));
@@ -238,7 +240,15 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
             TierHit hit{};
             classify_azimuth(az, hot_grid, hot_n, grid_step, &hit);
             int tag = 0;
-            if (mode == 0 || hit.kind == kTierCold) {
+            TierHit bracket{};
+            const bool resident_hit = mode == 2 && resident_bracket(az, hot_grid, hot_n, grid_step, &bracket) == 1;
+            if (mode == 2 && resident_hit) {
+                kind[s] = kTierHot;
+                ia[s] = bracket.index_a;
+                ib[s] = bracket.index_b;
+                ww[s] = bracket.weight_b;
+                tag = 3 * 100000 + bracket.index_a * 100 + bracket.index_b;
+            } else if (mode == 0 || mode == 2 || hit.kind == kTierCold) {
                 reference_flipped(az, hot_grid, hot_n, 1, grid_step, cold.data() + static_cast<size_t>(s) * pair,
                                   kFir);
                 kind[s] = kTierCold;
@@ -272,15 +282,15 @@ int motion_execute(const float* x, int sources, int total_blocks, int warmup, in
         if (mix_outputs == 0) {
             fir_blended_kernel<0><<<dim3(2, sources), kBlock, static_cast<size_t>(smem)>>>(
                 d_hist[b % 2], d_new, d_hist[(b + 1) % 2], d_y, d_warm, d_cold, d_slot, d_ia, d_ib, d_w,
-                d_kind, kBuf, kFir);
+                d_kind, buf, kFir);
         } else {
             fir_blended_kernel<1><<<dim3(2, sources), kBlock, static_cast<size_t>(smem)>>>(
                 d_hist[b % 2], d_new, d_hist[(b + 1) % 2], d_y, d_warm, d_cold, d_slot, d_ia, d_ib, d_w,
-                d_kind, kBuf, kFir);
+                d_kind, buf, kFir);
         }
         if (timed) {
-            CUDA_CHECK(cudaMemcpy(y_out + static_cast<size_t>(b - warmup) * sources * 2u * kBuf, d_y,
-                                  static_cast<size_t>(sources) * 2u * kBuf * sizeof(float),
+            CUDA_CHECK(cudaMemcpy(y_out + static_cast<size_t>(b - warmup) * sources * 2u * static_cast<size_t>(buf),
+                                  d_y, static_cast<size_t>(sources) * 2u * static_cast<size_t>(buf) * sizeof(float),
                                   cudaMemcpyDeviceToHost));
         }
         CUDA_CHECK(cudaEventRecord(ev1));

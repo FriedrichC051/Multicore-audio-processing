@@ -33,6 +33,15 @@ void grid_endpoints(float azimuth_deg, const int* hot_grid, int hot_count, int g
 void reference_flipped(float azimuth_deg, const int* hot_grid, int hot_count, int reupload_mode, int grid_step,
                        float* dst, int fir);
 
+void hrir_blend_linear(float azimuth_deg, const int* hot_grid, int hot_count, int grid_step, float* left,
+                       float* right, int fir);
+void hrir_blend_aligned(float azimuth_deg, const int* hot_grid, int hot_count, int grid_step, float* left,
+                        float* right, int fir);
+void hrir_nearest(float azimuth_deg, int grid_step, float* left, float* right, int fir);
+
+// 1 when azimuth lies between the retained directions, inclusive. 0 means the host must send the true set.
+int resident_bracket(float azimuth_deg, const int* hot_grid, int hot_count, int grid_step, TierHit* hit);
+
 int hrir_field_self_check();
 
 #endif

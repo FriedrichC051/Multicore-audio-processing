@@ -220,6 +220,145 @@ void reference_flipped(float azimuth_deg, const int* hot_grid, int hot_count, in
     hrir_flip_buffer(right, dst + fir, fir);
 }
 
+namespace {
+
+int onset_index(const float* h, int n) {
+    for (int i = 0; i < n; ++i) {
+        if (h[i] != 0.0f) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+void blend_aligned_ear(const float* a, const float* b, float w, float* dst, int n) {
+    const int da = onset_index(a, n);
+    const int db = onset_index(b, n);
+    const float delay = (1.0f - w) * static_cast<float>(da) + w * static_cast<float>(db);
+    float env[kFirDefault];
+    if (n > kFirDefault) {
+        return;
+    }
+    for (int k = 0; k < n; ++k) {
+        const float va = (da + k < n) ? a[da + k] : 0.0f;
+        const float vb = (db + k < n) ? b[db + k] : 0.0f;
+        env[k] = (1.0f - w) * va + w * vb;
+    }
+    for (int i = 0; i < n; ++i) {
+        const float t = static_cast<float>(i) - delay;
+        if (t < 0.0f) {
+            dst[i] = 0.0f;
+            continue;
+        }
+        const int i0 = static_cast<int>(t);
+        const float frac = t - static_cast<float>(i0);
+        const float e0 = (i0 >= 0 && i0 < n) ? env[i0] : 0.0f;
+        const float e1 = (i0 + 1 >= 0 && i0 + 1 < n) ? env[i0 + 1] : 0.0f;
+        dst[i] = (1.0f - frac) * e0 + frac * e1;
+    }
+}
+
+float wrap_deg(float deg) {
+    float x = std::fmod(deg, 360.0f);
+    if (x < 0.0f) {
+        x += 360.0f;
+    }
+    return x;
+}
+
+}  // namespace
+
+void hrir_blend_linear(float azimuth_deg, const int* hot_grid, int hot_count, int grid_step, float* left,
+                       float* right, int fir) {
+    float other_l[kFirDefault];
+    float other_r[kFirDefault];
+    float weight = 0.0f;
+    int kind = kTierCold;
+    if (fir > kFirDefault) {
+        return;
+    }
+    grid_endpoints(azimuth_deg, hot_grid, hot_count, grid_step, 0, left, right, other_l, other_r, &weight, &kind,
+                   fir);
+    if (kind == kTierCold) {
+        return;
+    }
+    for (int i = 0; i < fir; ++i) {
+        left[i] = (1.0f - weight) * left[i] + weight * other_l[i];
+        right[i] = (1.0f - weight) * right[i] + weight * other_r[i];
+    }
+}
+
+void hrir_blend_aligned(float azimuth_deg, const int* hot_grid, int hot_count, int grid_step, float* left,
+                        float* right, int fir) {
+    float other_l[kFirDefault];
+    float other_r[kFirDefault];
+    float mixed_l[kFirDefault];
+    float mixed_r[kFirDefault];
+    float weight = 0.0f;
+    int kind = kTierCold;
+    if (fir > kFirDefault) {
+        return;
+    }
+    grid_endpoints(azimuth_deg, hot_grid, hot_count, grid_step, 0, left, right, other_l, other_r, &weight, &kind,
+                   fir);
+    if (kind == kTierCold) {
+        return;
+    }
+    blend_aligned_ear(left, other_l, weight, mixed_l, fir);
+    blend_aligned_ear(right, other_r, weight, mixed_r, fir);
+    std::memcpy(left, mixed_l, static_cast<size_t>(fir) * sizeof(float));
+    std::memcpy(right, mixed_r, static_cast<size_t>(fir) * sizeof(float));
+}
+
+void hrir_nearest(float azimuth_deg, int grid_step, float* left, float* right, int fir) {
+    const int count = grid_count_for(grid_step);
+    if (count == 0 || fir > kFirDefault) {
+        return;
+    }
+    const float az = wrap_deg(azimuth_deg);
+    int index = static_cast<int>(std::lround(az / static_cast<float>(grid_step)));
+    index %= count;
+    if (index < 0) {
+        index += count;
+    }
+    hrir_causal(static_cast<float>(index * grid_step), left, right, fir);
+}
+
+int resident_bracket(float azimuth_deg, const int* hot_grid, int hot_count, int grid_step, TierHit* hit) {
+    const float az = wrap_deg(azimuth_deg);
+    hit->kind = kTierCold;
+    hit->index_a = 0;
+    hit->index_b = 0;
+    hit->weight_b = 0.0f;
+    if (hot_count < 1 || grid_count_for(grid_step) == 0) {
+        return 0;
+    }
+    const float first = static_cast<float>(hot_grid[0] * grid_step);
+    const float last = static_cast<float>(hot_grid[hot_count - 1] * grid_step);
+    if (az < first || az > last) {
+        return 0;
+    }
+    int i = 0;
+    while (i + 1 < hot_count && static_cast<float>(hot_grid[i + 1] * grid_step) < az) {
+        ++i;
+    }
+    if (i + 1 >= hot_count) {
+        hit->kind = kTierHot;
+        hit->index_a = hot_grid[i];
+        hit->index_b = hot_grid[i];
+        hit->weight_b = 0.0f;
+        return 1;
+    }
+    const float left = static_cast<float>(hot_grid[i] * grid_step);
+    const float right = static_cast<float>(hot_grid[i + 1] * grid_step);
+    const float span = right - left;
+    hit->kind = kTierHot;
+    hit->index_a = hot_grid[i];
+    hit->index_b = hot_grid[i + 1];
+    hit->weight_b = span > 0.0f ? (az - left) / span : 0.0f;
+    return 1;
+}
+
 int hrir_field_self_check() {
     float a_l[32];
     float a_r[32];
@@ -289,6 +428,42 @@ int hrir_field_self_check() {
         }
     }
     if (!differ) {
+        return 1;
+    }
+    float aligned_l[32];
+    float aligned_r[32];
+    float nearest_l[32];
+    float nearest_r[32];
+    hrir_blend_aligned(0.0f, hot, 4, 5, aligned_l, aligned_r, 32);
+    hrir_causal(0.0f, a_l, a_r, 32);
+    for (int i = 0; i < 32; ++i) {
+        if (std::fabs(aligned_l[i] - a_l[i]) > 1e-5f || std::fabs(aligned_r[i] - a_r[i]) > 1e-5f) {
+            return 1;
+        }
+    }
+    hrir_nearest(0.0f, 15, nearest_l, nearest_r, 32);
+    hrir_causal(0.0f, a_l, a_r, 32);
+    for (int i = 0; i < 32; ++i) {
+        if (nearest_l[i] != a_l[i] || nearest_r[i] != a_r[i]) {
+            return 1;
+        }
+    }
+    hrir_nearest(7.5f, 15, nearest_l, nearest_r, 32);
+    hrir_causal(15.0f, a_l, a_r, 32);
+    for (int i = 0; i < 32; ++i) {
+        if (nearest_l[i] != a_l[i] || nearest_r[i] != a_r[i]) {
+            return 1;
+        }
+    }
+    int span[8];
+    if (select_hot_grid(8, 5, span) != 8) {
+        return 1;
+    }
+    TierHit bracket{};
+    if (resident_bracket(2.5f, span, 8, 5, &bracket) != 1 || bracket.kind != kTierHot) {
+        return 1;
+    }
+    if (resident_bracket(160.0f, span, 8, 5, &bracket) != 0) {
         return 1;
     }
     return 0;
